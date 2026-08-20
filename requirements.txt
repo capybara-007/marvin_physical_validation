@@ -1,0 +1,8 @@
+numpy>=1.24,<2.4
+scipy>=1.11,<1.16
+termcolor==3.3.0
+mujoco==3.6.0
+mink==1.1.0
+loop-rate-limiters==1.2.0
+pandas>=2.0,<3.0
+pyarrow>=14,<24

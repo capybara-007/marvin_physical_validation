@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.py[cod]
+log/
+*.log
+outputs/
+runs/
+converted_trajectories/
+MUJOCO_LOG.TXT

@@ -1,0 +1,33 @@
+<mujoco model="marvin_pro replay scene">
+  <include file="marvin_pro.xml"/>
+
+  <statistic center="0 0 1.1" extent="1.4"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.2 0.2 0.2" specular="0.8 0.8 0.8"/>
+    <global azimuth="135" elevation="-25"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="flat" rgb1="0.02 0.02 0.02" rgb2="0.02 0.02 0.02" width="512" height="3072"/>
+    <texture type="2d" name="groundplane_tex" builtin="checker" mark="edge"
+             rgb1="0.20 0.25 0.30" rgb2="0.10 0.15 0.20" markrgb="0.8 0.8 0.8"
+             width="300" height="300"/>
+    <material name="groundplane_mat" texture="groundplane_tex" texuniform="true"
+              texrepeat="5 5" reflectance="0.15"/>
+  </asset>
+
+  <worldbody>
+    <light pos="1 0 3.5" dir="0 0 -1" directional="true"/>
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane_mat"
+          friction="1.0 0.01 0.001"/>
+    <body name="left_tool_site_target" pos="0.4 0.3 1.0" quat="1 0 0 0" mocap="true">
+      <geom type="box" size=".035 .05 .07" contype="0" conaffinity="0" rgba=".8 .2 .2 .2"/>
+      <site type="sphere" size="0.012" rgba="1 0 0 1" group="1"/>
+    </body>
+    <body name="right_tool_site_target" pos="0.4 -0.3 1.0" quat="1 0 0 0" mocap="true">
+      <geom type="box" size=".035 .05 .07" contype="0" conaffinity="0" rgba=".2 .2 .8 .2"/>
+      <site type="sphere" size="0.012" rgba="0 0 1 1" group="1"/>
+    </body>
+  </worldbody>
+</mujoco>
