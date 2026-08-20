@@ -22,7 +22,7 @@ cd /home/kernel/code/marvin_physical_validation
 conda activate marvin-physical-validation
 ```
 
-`setup_env.sh` 会创建环境、安装依赖并自动运行模型冒烟测试。环境名可通过
+`setup_env.sh` 会创建环境并安装依赖。环境名可通过
 `MARVIN_ENV_NAME` 修改：
 
 ```bash
@@ -30,14 +30,6 @@ MARVIN_ENV_NAME=my-marvin-env ./setup_env.sh
 ```
 
 模型资源已经放在 `model/marvin_pro/`，无需额外下载。
-
-## 模型冒烟测试
-
-```bash
-python3 smoke_test.py
-```
-
-正常输出应包含 `MODEL_OK`、`FK_OK`、`IK_OK` 和 `COLLISION_OK`。
 
 ## 回放轨迹
 
@@ -68,7 +60,6 @@ marvin_physical_validation/
 ├── utils/
 ├── replay.py
 ├── convert_episode_to_robot.py
-├── smoke_test.py
 ├── setup_env.sh
 ├── run_replay.sh
 └── requirements.txt

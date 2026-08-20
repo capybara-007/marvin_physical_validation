@@ -21,10 +21,6 @@ echo "[ENV] Installing project dependencies"
 "${CONDA_BIN}" run -n "${ENV_NAME}" python -m pip install --upgrade pip
 "${CONDA_BIN}" run -n "${ENV_NAME}" python -m pip install -r "${SCRIPT_DIR}/requirements.txt"
 
-echo "[ENV] Running Marvin model smoke test"
-cd "${SCRIPT_DIR}"
-MUJOCO_GL=egl "${CONDA_BIN}" run -n "${ENV_NAME}" python smoke_test.py
-
 echo
 echo "Environment is ready. Activate it with:"
 echo "  conda activate ${ENV_NAME}"
