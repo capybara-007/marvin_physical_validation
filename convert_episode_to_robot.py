@@ -3,8 +3,8 @@
 
 The raw episode contains pose CSV files in the AprilGrid frame and clamp-angle
 JSON files.  This module synchronizes both hands at 50 Hz, maps AprilGrid axes
-to the Marvin robot-base axes, optionally converts TCP poses back to gripper
-base poses, and writes the ``50hz/session_ee_*`` layout consumed by replay.py.
+to the Marvin robot-base axes, converts the recorded TCP poses to gripper-base
+poses, and writes the ``50hz/session_ee_*`` layout consumed by replay.py.
 """
 
 from __future__ import annotations
@@ -85,12 +85,9 @@ def _write_gripper(path: Path, relative_time: np.ndarray, gripper: np.ndarray) -
     np.savetxt(path, np.column_stack([relative_time, gripper]), fmt="%.9f")
 
 
-def output_path_for_episode(
-    episode: Path, output_root: Path, source_frame: str, control_point: str
-) -> Path:
-    suffix = "_base_to_robot" if control_point == "base" else "_to_robot"
+def output_path_for_episode(episode: Path, output_root: Path, source_frame: str) -> Path:
     frame_name = "aprilgrid" if source_frame == "aprilgrid" else "slam_world"
-    return output_root / episode.name / f"{frame_name}{suffix}"
+    return output_root / episode.name / f"{frame_name}_base_to_robot"
 
 
 def convert_episode(
@@ -98,23 +95,18 @@ def convert_episode(
     output_root: Path,
     *,
     source_frame: str = "aprilgrid",
-    control_point: str = "base",
-    tcp_to_base_tz: float = DEFAULT_TCP_TO_BASE_TZ,
     overwrite: bool = False,
 ) -> Path:
     """Convert one raw episode and return its replay trajectory directory.
 
     The raw CSVs produced by the current UGripper pipeline are TCP poses.  The
-    default therefore converts them to gripper-base control points, matching
-    Marvin's ``left_tool_site`` and ``right_tool_site`` semantics.  Pass
-    ``control_point='tcp'`` when the input should remain TCP.
+    converts them to gripper-base control points, matching Marvin's
+    ``left_tool_site`` and ``right_tool_site`` semantics.
     """
     episode = episode.expanduser().resolve()
     output_root = output_root.expanduser().resolve()
     if source_frame not in ("aprilgrid", "slam_world"):
         raise ValueError(f"unsupported source frame: {source_frame!r}")
-    if control_point not in ("base", "tcp"):
-        raise ValueError(f"unsupported control point: {control_point!r}")
     pose_dir = episode / "pose_data"
     pose_paths = {side: pose_dir / f"pose_data_{side}.csv" for side in ("left", "right")}
     gripper_paths = {
@@ -125,7 +117,7 @@ def convert_episode(
         if not path.is_file():
             raise FileNotFoundError(path)
 
-    result_root = output_path_for_episode(episode, output_root, source_frame, control_point)
+    result_root = output_path_for_episode(episode, output_root, source_frame)
     metadata_path = result_root / "conversion_metadata.json"
     if metadata_path.is_file() and not overwrite:
         return result_root
@@ -134,17 +126,16 @@ def convert_episode(
         R_SLAM_WORLD_TO_ROBOT if source_frame == "slam_world" else R_APRILGRID_TO_ROBOT
     )
     poses = {side: _load_pose(path) for side, path in pose_paths.items()}
-    if control_point == "base":
-        if tcp_to_base_tz <= 0.0:
-            raise ValueError("tcp_to_base_tz must be positive for base conversion")
-        poses = {
-            side: (
-                time_sec,
-                position - rotation.apply(np.broadcast_to([0.0, 0.0, tcp_to_base_tz], position.shape)),
-                rotation,
-            )
-            for side, (time_sec, position, rotation) in poses.items()
-        }
+    poses = {
+        side: (
+            time_sec,
+            position - rotation.apply(
+                np.broadcast_to([0.0, 0.0, DEFAULT_TCP_TO_BASE_TZ], position.shape)
+            ),
+            rotation,
+        )
+        for side, (time_sec, position, rotation) in poses.items()
+    }
 
     start_time = max(value[0][0] for value in poses.values())
     stop_time = min(value[0][-1] for value in poses.values())
@@ -198,13 +189,9 @@ def convert_episode(
 
     metadata = {
         "source": str(episode),
-        "source_pose": (
-            "T_source_tcp transformed by inverse(T_base_tcp)"
-            if control_point == "base"
-            else "T_source_tcp"
-        ),
-        "control_point": control_point,
-        "tcp_to_base_tz_m": float(tcp_to_base_tz) if control_point == "base" else None,
+        "source_pose": "T_source_tcp transformed by inverse(T_base_tcp)",
+        "control_point": "base",
+        "tcp_to_base_tz_m": DEFAULT_TCP_TO_BASE_TZ,
         "initial_control_point_vector_robot_m": initial_vector_robot.tolist(),
         "initial_control_point_distance_m": float(np.linalg.norm(initial_vector_robot)),
         # Compatibility with the current replay helper; this is the distance
@@ -236,8 +223,6 @@ def resolve_trajectory_input(
     *,
     output_root: Path | None = None,
     source_frame: str = "aprilgrid",
-    control_point: str = "base",
-    tcp_to_base_tz: float = DEFAULT_TCP_TO_BASE_TZ,
 ) -> Path:
     """Return a replay directory, converting a raw episode when necessary."""
     input_path = input_path.expanduser().resolve()
@@ -250,15 +235,13 @@ def resolve_trajectory_input(
         )
     if output_root is None:
         output_root = Path(__file__).resolve().parent / "converted_trajectories"
-    result_root = output_path_for_episode(input_path, output_root, source_frame, control_point)
+    result_root = output_path_for_episode(input_path, output_root, source_frame)
     if (result_root / "conversion_metadata.json").is_file() and (result_root / "50hz").is_dir():
         return result_root
     return convert_episode(
         input_path,
         output_root,
         source_frame=source_frame,
-        control_point=control_point,
-        tcp_to_base_tz=tcp_to_base_tz,
     )
 
 
@@ -271,19 +254,12 @@ def main() -> None:
         default=Path(__file__).resolve().parent / "converted_trajectories",
     )
     parser.add_argument("--source-frame", choices=("aprilgrid", "slam_world"), default="aprilgrid")
-    parser.add_argument(
-        "--control-point", choices=("base", "tcp"), default="base",
-        help="output control point; base is Marvin's default control point",
-    )
-    parser.add_argument("--tcp-to-base-tz", type=float, default=DEFAULT_TCP_TO_BASE_TZ)
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
     print(convert_episode(
         args.episode,
         args.output_root,
         source_frame=args.source_frame,
-        control_point=args.control_point,
-        tcp_to_base_tz=args.tcp_to_base_tz,
         overwrite=args.overwrite,
     ))
 

@@ -101,10 +101,3 @@ python test_full_vector_alignment.py \
 python convert_episode_to_robot.py \
   /home/kernel/Desktop/data/unified_episode/episode_20260818_0002
 ```
-
-如果希望保留输入 TCP 控制点而不做 `TCP → base` 偏移，指定：
-
-```bash
-python convert_episode_to_robot.py \
-  /path/to/episode --control-point tcp
-```
