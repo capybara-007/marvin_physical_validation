@@ -2,6 +2,8 @@
 
 Marvin Pro 平行夹爪版本的独立 MuJoCo/Mink 轨迹回放与物理验证工具。
 
+本项目基于VISTA: Vision-Grounded and Physics-Validated Adaptation of UMI Data for VLA Training。https://github.com/TeleHuman/umi-vista
+
 ## 功能
 
 - 双臂 7-DoF Mink IK/FK
