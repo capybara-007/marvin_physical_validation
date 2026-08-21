@@ -18,6 +18,16 @@ from scipy.spatial.transform import Rotation, Slerp
 
 
 SAMPLE_PERIOD_SEC = 0.02
+CONVERSION_FORMAT_VERSION = 2
+T_UGRIPPER_BASE_TCP = np.array(
+    [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.129708200693],
+        [0.0, 0.0, 0.0, 1.0],
+    ],
+    dtype=float,
+)
 R_APRILGRID_TO_ROBOT = np.array(
     [[0.0, 0.0, 1.0], [-1.0, 0.0, 0.0], [0.0, -1.0, 0.0]], dtype=float
 )
@@ -74,6 +84,22 @@ def _relative_robot_pose(
     return np.column_stack([relative_position, quaternion])
 
 
+def _base_pose_to_tcp_pose(
+    base_position: np.ndarray,
+    base_rotation: Rotation,
+    T_base_tcp: np.ndarray,
+) -> tuple[np.ndarray, Rotation]:
+    """Apply ``T_source_tcp = T_source_base @ T_base_tcp`` to pose samples."""
+    tcp_offset_in_base = T_base_tcp[:3, 3]
+    tcp_position = base_position + base_rotation.apply(
+        np.broadcast_to(tcp_offset_in_base, base_position.shape)
+    )
+    tcp_rotation = Rotation.from_matrix(
+        base_rotation.as_matrix() @ T_base_tcp[:3, :3]
+    )
+    return tcp_position, tcp_rotation
+
+
 def _write_trajectory(path: Path, relative_time: np.ndarray, pose: np.ndarray) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     np.savetxt(path, np.column_stack([relative_time, pose]), fmt="%.9f")
@@ -89,8 +115,10 @@ def output_path_for_episode(episode: Path, output_root: Path, source_frame: str)
     return output_root / episode.name / f"{frame_name}_base_to_robot"
 
 
-def _conversion_cache_is_current(result_root: Path) -> bool:
-    """Return whether cached trajectories use direct gripper-base positions."""
+def _conversion_cache_is_current(
+    result_root: Path, T_base_tcp: np.ndarray
+) -> bool:
+    """Return whether cached trajectories use the current base-to-TCP transform."""
     metadata_path = result_root / "conversion_metadata.json"
     if not metadata_path.is_file() or not (result_root / "50hz").is_dir():
         return False
@@ -99,11 +127,15 @@ def _conversion_cache_is_current(result_root: Path) -> bool:
         vector = np.asarray(
             metadata.get("initial_control_point_vector_robot_m"), dtype=float
         )
+        cached_T_base_tcp = np.asarray(metadata.get("T_base_tcp"), dtype=float)
     except (OSError, TypeError, ValueError):
         return False
     return bool(
-        metadata.get("source_pose") == "T_source_gripper_base"
-        and metadata.get("control_point") == "base"
+        metadata.get("conversion_format_version") == CONVERSION_FORMAT_VERSION
+        and metadata.get("source_pose") == "T_source_gripper_base"
+        and metadata.get("control_point") == "tcp"
+        and cached_T_base_tcp.shape == (4, 4)
+        and np.allclose(cached_T_base_tcp, T_base_tcp, atol=1e-12)
         and "tcp_to_base_tz_m" not in metadata
         and vector.shape == (3,)
         and np.all(np.isfinite(vector))
@@ -119,8 +151,9 @@ def convert_episode(
 ) -> Path:
     """Convert one raw episode and return its replay trajectory directory.
 
-    The raw CSV positions are already gripper-base control points, matching
-    Marvin's ``left_tool_site`` and ``right_tool_site`` semantics.
+    The raw CSV poses describe the UGripper base. They are transformed to the
+    calibrated UGripper TCP before relative motion is generated. Marvin's
+    ``*_tool_site`` frames represent the midpoint of its two finger tips.
     """
     episode = episode.expanduser().resolve()
     output_root = output_root.expanduser().resolve()
@@ -138,16 +171,18 @@ def convert_episode(
 
     result_root = output_path_for_episode(episode, output_root, source_frame)
     metadata_path = result_root / "conversion_metadata.json"
-    if not overwrite and _conversion_cache_is_current(result_root):
+    if not overwrite and _conversion_cache_is_current(
+        result_root, T_UGRIPPER_BASE_TCP
+    ):
         return result_root
 
     source_to_robot = (
         R_SLAM_WORLD_TO_ROBOT if source_frame == "slam_world" else R_APRILGRID_TO_ROBOT
     )
-    poses = {side: _load_pose(path) for side, path in pose_paths.items()}
+    base_poses = {side: _load_pose(path) for side, path in pose_paths.items()}
 
-    start_time = max(value[0][0] for value in poses.values())
-    stop_time = min(value[0][-1] for value in poses.values())
+    start_time = max(value[0][0] for value in base_poses.values())
+    stop_time = min(value[0][-1] for value in base_poses.values())
     target_time = np.arange(start_time, stop_time, SAMPLE_PERIOD_SEC)
     if target_time.size < 2:
         raise ValueError("the synchronized left/right time range is too short")
@@ -156,9 +191,12 @@ def convert_episode(
     interpolated: dict[str, tuple[np.ndarray, Rotation]] = {}
     grippers: dict[str, np.ndarray] = {}
     for side in ("left", "right"):
-        source_time, source_position, source_rotation = poses[side]
-        interpolated[side] = _interpolate_pose(
+        source_time, source_position, source_rotation = base_poses[side]
+        base_position, base_rotation = _interpolate_pose(
             source_time, source_position, source_rotation, target_time
+        )
+        interpolated[side] = _base_pose_to_tcp_pose(
+            base_position, base_rotation, T_UGRIPPER_BASE_TCP
         )
         grippers[side] = _load_gripper(gripper_paths[side], target_time)
 
@@ -170,7 +208,7 @@ def convert_episode(
     )
     stats: dict[str, object] = {}
     for side in ("left", "right"):
-        source_time, _, _ = poses[side]
+        source_time, _, _ = base_poses[side]
         position, rotation = interpolated[side]
         pose = _relative_robot_pose(position, rotation, source_to_robot)
         session_suffix = episode.name.rsplit("_", maxsplit=1)[-1]
@@ -197,9 +235,12 @@ def convert_episode(
         }
 
     metadata = {
+        "conversion_format_version": CONVERSION_FORMAT_VERSION,
         "source": str(episode),
         "source_pose": "T_source_gripper_base",
-        "control_point": "base",
+        "control_point": "tcp",
+        "T_base_tcp": T_UGRIPPER_BASE_TCP.tolist(),
+        "control_point_formula": "T_source_tcp = T_source_base @ T_base_tcp",
         "initial_control_point_vector_robot_m": initial_vector_robot.tolist(),
         "initial_control_point_distance_m": float(np.linalg.norm(initial_vector_robot)),
         # Compatibility with the current replay helper; this is the distance

@@ -30,7 +30,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def source_initial_base_vector(metadata_path: Path) -> np.ndarray:
+def source_initial_control_point_vector(metadata_path: Path) -> np.ndarray:
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     direct_vector = metadata.get("initial_control_point_vector_robot_m")
     if direct_vector is not None:
@@ -77,15 +77,15 @@ def main() -> int:
     replay.LOG_FLAG = False
 
     metadata_path = trajectory_dir / "conversion_metadata.json"
-    target_vector = source_initial_base_vector(metadata_path)
+    target_vector = source_initial_control_point_vector(metadata_path)
     robot = replay.RbtKin()
     home = robot.solve_fk()
     home_vector = np.asarray(home[0][:3]) - np.asarray(home[1][:3])
     # replay() restores the complete left-right vector automatically.
     adjustment = np.zeros(6, dtype=float)
 
-    print(f"[TEST] target base vector (left-right) = {target_vector.tolist()}")
-    print(f"[TEST] home base vector (left-right)   = {home_vector.tolist()}")
+    print(f"[TEST] target TCP vector (left-right) = {target_vector.tolist()}")
+    print(f"[TEST] Marvin TCP vector (left-right) = {home_vector.tolist()}")
     print(f"[TEST] automatic vector alignment; manual correction = {adjustment.tolist()}")
     result = replay.replay(trajectory_index=args.index, adjust_ee_dist=adjustment)
     collision = result["detail"].get("collision") or {"colliding": False, "score": 100.0}

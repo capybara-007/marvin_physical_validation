@@ -155,7 +155,10 @@
                               <geom group="3" type="mesh" rgba="0.9373 0.2667 0.2667 1" contype="1" conaffinity="1" condim="4" friction="0.8 0.05 0.01" mesh="left_gripper_right_finger_mesh"/>
                             </body>
                             <body name="left_tool" pos="0 0 0" quat="0.5 -0.5 -0.5 -0.5">
-                              <site name="left_tool_site" pos="0 0 0" size="0.005"/>
+                              <!-- Midpoint of the two distal finger tips. In the
+                                   gripper-base frame this is approximately
+                                   [0.000795, -0.002959, 0.162710] m. -->
+                              <site name="left_tool_site" pos="0.16270998 0.00079502 -0.00295853" size="0.005"/>
                             </body>
                           </body>
                         </body>
@@ -227,7 +230,8 @@
                               <geom group="3" type="mesh" rgba="0.9373 0.2667 0.2667 1" contype="1" conaffinity="1" condim="4" friction="0.8 0.05 0.01" mesh="right_gripper_right_finger_mesh"/>
                             </body>
                             <body name="right_tool" pos="0 0 0" quat="0.5 -0.5 -0.5 -0.5">
-                              <site name="right_tool_site" pos="0 0 0" size="0.005"/>
+                              <!-- Same symmetric two-finger TCP as the left gripper. -->
+                              <site name="right_tool_site" pos="0.16270998 0.00079502 -0.00295853" size="0.005"/>
                             </body>
                           </body>
                         </body> 
