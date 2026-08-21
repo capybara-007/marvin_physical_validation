@@ -191,33 +191,43 @@ def _find_conversion_metadata(left_pose_path: Optional[str]) -> Optional[Path]:
     return None
 
 
-def _resolve_initial_tcp_distance(
+def _resolve_initial_control_point_alignment(
     traj_left_pose: np.ndarray,
     traj_right_pose: np.ndarray,
     left_pose_path: Optional[str],
-) -> Tuple[Optional[float], bool, str]:
-    """Resolve the demonstrated left/right TCP distance at the first frame.
+) -> Tuple[Optional[np.ndarray], Optional[float], bool, str]:
+    """Resolve the demonstrated left-minus-right vector at the first frame.
 
-    Absolute trajectories contain the distance directly. Relative trajectories
-    start at identity for each hand, so recover the synchronized source poses
-    using conversion metadata when available.
+    Absolute trajectories contain the vector directly. Relative trajectories
+    start at identity for each hand, so recover it from conversion metadata.
+    Legacy metadata containing only a scalar distance remains supported.
     """
     starts_relative = _trajectory_starts_relative(traj_left_pose, traj_right_pose)
     if not starts_relative:
         left_position = np.asarray(traj_left_pose[0, 1:4], dtype=float)
         right_position = np.asarray(traj_right_pose[0, 1:4], dtype=float)
-        distance = float(np.linalg.norm(left_position - right_position))
-        return distance, False, "trajectory first frame"
+        vector = left_position - right_position
+        return vector, float(np.linalg.norm(vector)), False, "trajectory first frame"
 
     metadata_path = _find_conversion_metadata(left_pose_path)
     if metadata_path is None:
-        return None, True, "relative trajectory without conversion metadata"
+        return None, None, True, "relative trajectory without conversion metadata"
 
     try:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-        direct_distance = metadata.get("initial_tcp_distance_m")
+        direct_vector = metadata.get("initial_control_point_vector_robot_m")
+        if direct_vector is not None:
+            vector = np.asarray(direct_vector, dtype=float).reshape(-1)
+            if vector.shape != (3,) or not np.all(np.isfinite(vector)):
+                raise ValueError(f"invalid initial control-point vector: {direct_vector!r}")
+            return vector, float(np.linalg.norm(vector)), True, str(metadata_path)
+
+        direct_distance = metadata.get(
+            "initial_control_point_distance_m",
+            metadata.get("initial_tcp_distance_m"),
+        )
         if direct_distance is not None:
-            return float(direct_distance), True, str(metadata_path)
+            return None, float(direct_distance), True, str(metadata_path)
 
         source_dir = Path(str(metadata["source"])).expanduser()
         stats = metadata.get("stats", {})
@@ -232,10 +242,21 @@ def _resolve_initial_tcp_distance(
                 dtype=float,
             )
             positions.append(position)
-        distance = float(np.linalg.norm(positions[0] - positions[1]))
-        return distance, True, f"source poses referenced by {metadata_path}"
+        source_vector = positions[0] - positions[1]
+        source_to_robot = np.asarray(
+            metadata.get("R_source_to_robot", np.eye(3)), dtype=float
+        )
+        if source_to_robot.shape != (3, 3):
+            raise ValueError(f"invalid R_source_to_robot: {source_to_robot!r}")
+        vector = source_to_robot @ source_vector
+        return (
+            vector,
+            float(np.linalg.norm(vector)),
+            True,
+            f"source poses referenced by {metadata_path}",
+        )
     except Exception as exc:
-        return None, True, f"failed to recover source distance: {exc!r}"
+        return None, None, True, f"failed to recover source alignment: {exc!r}"
 
 def _load_gripper_traj(file_path: str) -> np.ndarray:
     """Load gripper trajectory from clamp/gripper file.
@@ -956,17 +977,29 @@ def replay(trajectory_index: int = 1,
     tR_pose = np.asarray(traj_right_pose[:, 0], dtype=float)
     timeline = np.asarray(tL_pose, dtype=float)
     n_steps = int(timeline.size)
+    initial_control_point_vector_m: Optional[np.ndarray] = None
     initial_tcp_distance_m: Optional[float] = None
     trajectory_starts_relative = True
     if REPLAY_TYPE == 0:
-        initial_tcp_distance_m, trajectory_starts_relative, distance_source = _resolve_initial_tcp_distance(
+        (
+            initial_control_point_vector_m,
+            initial_tcp_distance_m,
+            trajectory_starts_relative,
+            distance_source,
+        ) = _resolve_initial_control_point_alignment(
             traj_left_pose, traj_right_pose, selected_left_pose_path
         )
         if initial_tcp_distance_m is None:
-            _info(f"[PREALIGN] Initial TCP distance unavailable ({distance_source}); keeping model home distance")
+            _info(f"[PREALIGN] Initial control-point distance unavailable ({distance_source}); keeping model home distance")
+        elif initial_control_point_vector_m is not None:
+            _info(
+                f"[PREALIGN] Demonstration initial left-right vector: "
+                f"{initial_control_point_vector_m.tolist()} m, "
+                f"distance={initial_tcp_distance_m:.4f} m ({distance_source})"
+            )
         else:
             _info(
-                f"[PREALIGN] Demonstration initial TCP distance: {initial_tcp_distance_m:.4f} m "
+                f"[PREALIGN] Demonstration initial control-point distance: {initial_tcp_distance_m:.4f} m "
                 f"({distance_source})"
             )
         if target_tcp_distance_m is not None:
@@ -975,8 +1008,18 @@ def replay(trajectory_index: int = 1,
                 raise ValueError(
                     f"target_tcp_distance_m must be within 0.15..0.80 m, got {manual_distance!r}"
                 )
+            if (
+                initial_control_point_vector_m is not None
+                and initial_tcp_distance_m is not None
+                and initial_tcp_distance_m > 1e-9
+            ):
+                initial_control_point_vector_m = (
+                    initial_control_point_vector_m
+                    / initial_tcp_distance_m
+                    * manual_distance
+                )
             initial_tcp_distance_m = manual_distance
-            _info(f"[PREALIGN] Manual TCP distance override: {manual_distance:.4f} m")
+            _info(f"[PREALIGN] Manual control-point distance override: {manual_distance:.4f} m")
     # Prepare gripper time/qpos arrays
     tLG = np.asarray(traj_left_gripper[:, 0], dtype=float)
     qLG = np.asarray(traj_left_gripper[:, 1], dtype=float)
@@ -1165,19 +1208,29 @@ def replay(trajectory_index: int = 1,
                         home_distance = float(np.linalg.norm(separation))
                         if 0.15 <= initial_tcp_distance_m <= 0.80 and home_distance > 1e-6:
                             midpoint = 0.5 * (home_left + home_right)
-                            direction = separation / home_distance
-                            aligned_left = midpoint + 0.5 * initial_tcp_distance_m * direction
-                            aligned_right = midpoint - 0.5 * initial_tcp_distance_m * direction
+                            alignment_vector = (
+                                np.asarray(initial_control_point_vector_m, dtype=float)
+                                if initial_control_point_vector_m is not None
+                                else separation / home_distance * initial_tcp_distance_m
+                            )
+                            aligned_left = midpoint + 0.5 * alignment_vector
+                            aligned_right = midpoint - 0.5 * alignment_vector
                             distance_adjust_dist = np.concatenate(
                                 [aligned_left - home_left, aligned_right - home_right]
                             )
-                            _info(
-                                f"[PREALIGN] Adjusting Marvin TCP distance "
-                                f"{home_distance:.4f} -> {initial_tcp_distance_m:.4f} m"
-                            )
+                            if initial_control_point_vector_m is not None:
+                                _info(
+                                    f"[PREALIGN] Adjusting Marvin left-right vector "
+                                    f"{separation.tolist()} -> {alignment_vector.tolist()} m"
+                                )
+                            else:
+                                _info(
+                                    f"[PREALIGN] Adjusting Marvin control-point distance "
+                                    f"{home_distance:.4f} -> {initial_tcp_distance_m:.4f} m"
+                                )
                         else:
                             _info(
-                                f"[PREALIGN] Ignoring implausible initial TCP distance "
+                                f"[PREALIGN] Ignoring implausible initial control-point distance "
                                 f"{initial_tcp_distance_m:.4f} m; expected 0.15..0.80 m"
                             )
                     state = State.ADJUST_EE

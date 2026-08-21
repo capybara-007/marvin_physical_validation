@@ -244,7 +244,7 @@ class MarvinProMink:
         """
         poses7 = []
         for hand in self.hands:
-            # site frame (not *_target) gives real TCP pose
+            # The site frame (not *_target) is the gripper-base control point.
             pos, quat = self.forward_kinematics(hand, "site", sync_mocap=False)# set_real_qpos has already synchronized this
             if quat is None:
                 # Fallback: identity quaternion if missing

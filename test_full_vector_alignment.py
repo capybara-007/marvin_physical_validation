@@ -9,7 +9,6 @@ import os
 from pathlib import Path
 
 import numpy as np
-from scipy.spatial.transform import Rotation
 
 
 DEFAULT_TRAJECTORY_DIR = Path(
@@ -45,10 +44,6 @@ def source_initial_base_vector(metadata_path: Path) -> np.ndarray:
     source = Path(metadata["source"])
     stats = metadata["stats"]
     positions = {}
-    inverse_matrix = metadata.get("T_base_tcp_used_for_inverse")
-    tcp_offset = 0.0
-    if inverse_matrix is not None:
-        tcp_offset = float(inverse_matrix[2][3])
     for side in ("left", "right"):
         samples = np.genfromtxt(
             source / "pose_data" / f"pose_data_{side}.csv",
@@ -58,16 +53,6 @@ def source_initial_base_vector(metadata_path: Path) -> np.ndarray:
         )
         index = int(stats[side]["source_initial_index"])
         position = np.array([samples["X"][index], samples["Y"][index], samples["Z"][index]])
-        if tcp_offset:
-            quaternion = np.array(
-                [
-                    samples["Quat_X"][index],
-                    samples["Quat_Y"][index],
-                    samples["Quat_Z"][index],
-                    samples["Quat_W"][index],
-                ]
-            )
-            position -= Rotation.from_quat(quaternion).apply([0.0, 0.0, tcp_offset])
         positions[side] = position
     source_frame = metadata.get("source_frame", "aprilgrid")
     source_to_robot = R_SLAM_WORLD_TO_ROBOT if source_frame == "slam_world" else R_GRID_TO_ROBOT
@@ -96,17 +81,12 @@ def main() -> int:
     robot = replay.RbtKin()
     home = robot.solve_fk()
     home_vector = np.asarray(home[0][:3]) - np.asarray(home[1][:3])
-    home_direction = home_vector / np.linalg.norm(home_vector)
-
-    # replay() performs scalar-distance pre-alignment first. Add the correction
-    # needed to rotate that scalar-aligned vector onto the complete target vector.
-    scalar_vector = np.linalg.norm(target_vector) * home_direction
-    left_correction = 0.5 * (target_vector - scalar_vector)
-    adjustment = np.concatenate([left_correction, -left_correction])
+    # replay() restores the complete left-right vector automatically.
+    adjustment = np.zeros(6, dtype=float)
 
     print(f"[TEST] target base vector (left-right) = {target_vector.tolist()}")
     print(f"[TEST] home base vector (left-right)   = {home_vector.tolist()}")
-    print(f"[TEST] manual 6D correction             = {adjustment.tolist()}")
+    print(f"[TEST] automatic vector alignment; manual correction = {adjustment.tolist()}")
     result = replay.replay(trajectory_index=args.index, adjust_ee_dist=adjustment)
     collision = result["detail"].get("collision") or {"colliding": False, "score": 100.0}
     print(f"[TEST] collision_min_score = {result['collision_min_score']}")

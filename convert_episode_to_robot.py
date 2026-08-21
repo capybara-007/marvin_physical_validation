@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Convert a raw dual-gripper episode into Marvin replay trajectories.
 
-The raw episode contains pose CSV files in the AprilGrid frame and clamp-angle
-JSON files.  This module synchronizes both hands at 50 Hz, maps AprilGrid axes
-to the Marvin robot-base axes, converts the recorded TCP poses to gripper-base
-poses, and writes the ``50hz/session_ee_*`` layout consumed by replay.py.
+The raw episode contains gripper-base pose CSV files in the AprilGrid frame and
+clamp-angle JSON files.  This module synchronizes both hands at 50 Hz, maps
+AprilGrid axes to the Marvin robot-base axes, and writes the
+``50hz/session_ee_*`` layout consumed by replay.py.
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ from scipy.spatial.transform import Rotation, Slerp
 
 
 SAMPLE_PERIOD_SEC = 0.02
-DEFAULT_TCP_TO_BASE_TZ = 0.129708200693
 R_APRILGRID_TO_ROBOT = np.array(
     [[0.0, 0.0, 1.0], [-1.0, 0.0, 0.0], [0.0, -1.0, 0.0]], dtype=float
 )
@@ -90,6 +89,27 @@ def output_path_for_episode(episode: Path, output_root: Path, source_frame: str)
     return output_root / episode.name / f"{frame_name}_base_to_robot"
 
 
+def _conversion_cache_is_current(result_root: Path) -> bool:
+    """Return whether cached trajectories use direct gripper-base positions."""
+    metadata_path = result_root / "conversion_metadata.json"
+    if not metadata_path.is_file() or not (result_root / "50hz").is_dir():
+        return False
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        vector = np.asarray(
+            metadata.get("initial_control_point_vector_robot_m"), dtype=float
+        )
+    except (OSError, TypeError, ValueError):
+        return False
+    return bool(
+        metadata.get("source_pose") == "T_source_gripper_base"
+        and metadata.get("control_point") == "base"
+        and "tcp_to_base_tz_m" not in metadata
+        and vector.shape == (3,)
+        and np.all(np.isfinite(vector))
+    )
+
+
 def convert_episode(
     episode: Path,
     output_root: Path,
@@ -99,9 +119,8 @@ def convert_episode(
 ) -> Path:
     """Convert one raw episode and return its replay trajectory directory.
 
-    The raw CSVs produced by the current UGripper pipeline are TCP poses.  The
-    converts them to gripper-base control points, matching Marvin's
-    ``left_tool_site`` and ``right_tool_site`` semantics.
+    The raw CSV positions are already gripper-base control points, matching
+    Marvin's ``left_tool_site`` and ``right_tool_site`` semantics.
     """
     episode = episode.expanduser().resolve()
     output_root = output_root.expanduser().resolve()
@@ -119,23 +138,13 @@ def convert_episode(
 
     result_root = output_path_for_episode(episode, output_root, source_frame)
     metadata_path = result_root / "conversion_metadata.json"
-    if metadata_path.is_file() and not overwrite:
+    if not overwrite and _conversion_cache_is_current(result_root):
         return result_root
 
     source_to_robot = (
         R_SLAM_WORLD_TO_ROBOT if source_frame == "slam_world" else R_APRILGRID_TO_ROBOT
     )
     poses = {side: _load_pose(path) for side, path in pose_paths.items()}
-    poses = {
-        side: (
-            time_sec,
-            position - rotation.apply(
-                np.broadcast_to([0.0, 0.0, DEFAULT_TCP_TO_BASE_TZ], position.shape)
-            ),
-            rotation,
-        )
-        for side, (time_sec, position, rotation) in poses.items()
-    }
 
     start_time = max(value[0][0] for value in poses.values())
     stop_time = min(value[0][-1] for value in poses.values())
@@ -189,9 +198,8 @@ def convert_episode(
 
     metadata = {
         "source": str(episode),
-        "source_pose": "T_source_tcp transformed by inverse(T_base_tcp)",
+        "source_pose": "T_source_gripper_base",
         "control_point": "base",
-        "tcp_to_base_tz_m": DEFAULT_TCP_TO_BASE_TZ,
         "initial_control_point_vector_robot_m": initial_vector_robot.tolist(),
         "initial_control_point_distance_m": float(np.linalg.norm(initial_vector_robot)),
         # Compatibility with the current replay helper; this is the distance
@@ -235,9 +243,6 @@ def resolve_trajectory_input(
         )
     if output_root is None:
         output_root = Path(__file__).resolve().parent / "converted_trajectories"
-    result_root = output_path_for_episode(input_path, output_root, source_frame)
-    if (result_root / "conversion_metadata.json").is_file() and (result_root / "50hz").is_dir():
-        return result_root
     return convert_episode(
         input_path,
         output_root,

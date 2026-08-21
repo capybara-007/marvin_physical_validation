@@ -76,8 +76,8 @@ view_files/sensor_left_clamp_angle.json
 view_files/sensor_right_clamp_angle.json
 ```
 
-默认执行 AprilGrid → robot-base 坐标变换，并将当前 UGripper TCP 轨迹沿局部
-`+Z` 方向反变换为 Marvin 控制的 gripper base。输出会缓存到本工程的
+原始 CSV 的 `X/Y/Z` 已经是 gripper base 控制点。转换器仅执行
+AprilGrid → robot-base 坐标变换，不再施加额外的 TCP → base 位移。输出会缓存到本工程的
 `converted_trajectories/`，因此可视化脚本可以直接接收原始 episode 根目录：
 
 ```bash
